@@ -5,7 +5,7 @@ const { execSync } = require("child_process");
 const https = require("https");
 const { sendAlert } = require("./alert");
 
-const REPO = "ddr5558/ai-monetization-pipeline";
+const REPO = "highlevelsin-prog/ai-monetization-pipeline";
 const WORKFLOW = "blog-generator.yml";
 const WAIT_LIMIT_MS = 10 * 60 * 1000; // 평소 1~2분. 10분 넘으면 이상으로 본다.
 const POLL_MS = 15 * 1000;
