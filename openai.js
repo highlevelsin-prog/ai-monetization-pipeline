@@ -24,7 +24,8 @@ async function chat({ apiKey, model, prompt, maxTokens, reasoningEffort, retries
     try {
       const res = await axios.post("https://api.openai.com/v1/chat/completions", body, {
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        timeout: 5 * 60 * 1000,
+        // 평소 30초 안팎. 재시도 포함 최악(3분×3+대기)이 로컬 대기 한도(triggerGenerate 14분) 안에 들도록
+        timeout: 3 * 60 * 1000,
       });
       const choice = res.data.choices && res.data.choices[0];
       const text = choice && choice.message && choice.message.content;

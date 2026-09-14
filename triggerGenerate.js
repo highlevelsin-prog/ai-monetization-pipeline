@@ -7,7 +7,8 @@ const { sendAlert } = require("./alert");
 
 const REPO = "highlevelsin-prog/ai-monetization-pipeline";
 const WORKFLOW = "blog-generator.yml";
-const WAIT_LIMIT_MS = 10 * 60 * 1000; // 평소 1~2분. 10분 넘으면 이상으로 본다.
+// 평소 1~2분. OpenAI 재시도 최악 시간을 감안하되 워크플로 제한(15분)보다 짧게.
+const WAIT_LIMIT_MS = 14 * 60 * 1000;
 const POLL_MS = 15 * 1000;
 
 function getToken() {

@@ -10,6 +10,11 @@ on:
         default: "us"
         type: choice
         options: ["us", "kr"]
+      dry_run:
+        description: "점검용: 글 생성까지만 하고 워드프레스에 발행하지 않음"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   generate:
@@ -33,6 +38,7 @@ jobs:
         env:
           # 지정하지 않으면 blogGenerator.js가 "us"로 떨어진다(기존 동작 보존).
           NEWS_SOURCE: ${{ inputs.source }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}

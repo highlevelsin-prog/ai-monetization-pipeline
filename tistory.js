@@ -115,14 +115,16 @@ async function isOnTistory(title) {
     });
     const want = key(shortenTitle(title, 40));
     const titles = [...String(res.data).matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>/g)].map((m) => key(m[1]));
-    // 완전 일치, 또는 티스토리가 제목을 더 줄여 저장한 경우를 위해 충분히 긴(15자+) 앞부분 일치
-    return titles.some((t) => t === want || (t.length >= 15 && want.startsWith(t)) || (want.length >= 15 && t.startsWith(want)));
+    // 완전 일치만 인정한다. 앞부분 일치까지 허용하면 제목이 비슷한 옛 공개 글과 겹칠 때
+    // 새 글을 '이미 있음'으로 오판해 발행 없이 기록만 하고 넘어갈 수 있다(조용한 누락).
+    // 참고: 2026-09-14부터 새 글은 비공개라 RSS에 안 나오므로, 이 확인은 공개 글에만 효과가 있다.
+    return titles.includes(want);
   } catch {
     return null;
   }
 }
 
-// 제목/본문을 티스토리에 공개 발행
+// 제목/본문을 티스토리에 비공개로 저장
 async function postToTistory(title, content) {
   // PC가 켜져 있으면 Whale(9222)을 알아서 띄운다 (없을 때만).
   await ensureWhaleRunning();
@@ -216,9 +218,8 @@ async function postToTistory(title, content) {
     await page.evaluate(() => document.querySelector("#publish-btn").click());
     await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
 
-    // 발행 확인: 글쓰기 화면을 벗어났거나, RSS에 제목이 올라왔으면 성공.
-    // 확인이 안 되면 throw → mirrored.json에 기록되지 않아 다음 실행에서 재시도된다
-    // (재시도 전에 RSS로 중복을 한 번 더 걸러낸다).
+    // 발행 확인: 저장 후 글쓰기 화면을 벗어났으면 성공 (비공개 글은 RSS에 안 나오므로 화면 전환이 주 판단 기준).
+    // 확인이 안 되면 throw → mirrored.json에 기록되지 않아 다음 실행에서 재시도된다.
     let confirmed = !/\/manage\/newpost/.test(page.url());
     for (let i = 0; !confirmed && i < 6; i++) {
       await new Promise((r) => setTimeout(r, 5000));
