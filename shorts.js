@@ -1,19 +1,19 @@
 // 유튜브 쇼츠 대본 생성 모듈
 // 기사 내용을 읽고 브루(Vrew)용 60초 쇼츠 대본을 만들어 프로젝트의 쇼츠대본 폴더에 저장한다.
-const Anthropic = require("@anthropic-ai/sdk");
 const fs = require("fs");
 const path = require("path");
+const { chat, MODELS } = require("./openai");
 
 // 저장 폴더: 프로젝트 폴더 안의 쇼츠대본 (2026-07-24 변경: 바탕화면 -> 프로젝트 폴더)
 const SHORTS_DIR = path.join(__dirname, "쇼츠대본");
 
-// Anthropic 키: 로컬 설정 파일(.shorts-config.json) 또는 환경변수
+// OpenAI 키: 로컬 설정 파일(.shorts-config.json의 openaiKey) 또는 환경변수
 function getApiKey() {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, ".shorts-config.json"), "utf8"));
-    return cfg.anthropicKey || process.env.ANTHROPIC_API_KEY;
+    return cfg.openaiKey || process.env.OPENAI_API_KEY;
   } catch {
-    return process.env.ANTHROPIC_API_KEY;
+    return process.env.OPENAI_API_KEY;
   }
 }
 
@@ -36,7 +36,7 @@ function shortsExists(id) {
 async function generateShorts({ id, title, contentHtml, url }) {
   const key = getApiKey();
   if (!key) {
-    console.log("Anthropic 키 없음(.shorts-config.json) — 쇼츠 대본 생략");
+    console.log("OpenAI 키 없음(.shorts-config.json) — 쇼츠 대본 생략");
     return;
   }
   try {
@@ -75,24 +75,10 @@ ${articleText}
 [유튜브 태그]
 <#태그1 #태그2 ...>`;
 
-    const client = new Anthropic({ apiKey: key });
-    // 일시적 API 오류에 대비해 2회 재시도
-    let res;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        res = await client.messages.create({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 1500,
-          messages: [{ role: "user", content: prompt }],
-        });
-        break;
-      } catch (e) {
-        if (attempt === 2) throw e;
-        console.log(`쇼츠 API 재시도(${attempt}):`, e.message);
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-    }
-    const script = res.content[0].text.trim();
+    // 일시적 API 오류는 chat()이 재시도한다
+    const script = (
+      await chat({ apiKey: key, model: MODELS.shorts, prompt, maxTokens: 4000, reasoningEffort: "low" })
+    ).trim();
 
     if (!fs.existsSync(SHORTS_DIR)) fs.mkdirSync(SHORTS_DIR, { recursive: true });
     const file = path.join(SHORTS_DIR, `${id}_${sanitize(title)}.txt`);

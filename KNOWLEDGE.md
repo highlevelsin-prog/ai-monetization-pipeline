@@ -25,11 +25,12 @@
 
 | 파일 | 역할 | 핵심 함수 |
 |------|------|-----------|
-| `blogGenerator.js` | (클라우드) 뉴스→Claude 기사 생성→이미지 삽입(영어 IMAGE 키워드)→워드프레스 발행. `DRY_RUN=1`이면 발행 생략 | getTrendingTopics, generateBlogPost, searchImage, insertImages, postToWordPress, main |
+| `blogGenerator.js` | (클라우드) 뉴스→OpenAI(gpt-5.4) 기사 생성→이미지 삽입(영어 IMAGE 키워드)→워드프레스 발행. `DRY_RUN=1`이면 발행 생략 | getTrendingTopics, generateBlogPost, searchImage, insertImages, postToWordPress, main |
 | `newsSources.js` | 뉴스 소재 공급. kr=국내 증권 RSS / us=NewsAPI (워크플로 입력 source) | pickTopic |
 | `tistory.js` | 티스토리 발행 공유 모듈. Whale 자동실행·로그인확인·제목40자축약·본문/태그입력·발행·발행확인, RSS 중복확인 | ensureWhaleRunning, postToTistory, shortenTitle, isOnTistory |
 | `tistoryMirror.js` | (로컬) 워드프레스 최신글 미러링 + 쇼츠생성 + 세션알림. 중복방지(mirrored.json) | main, getRecentPosts |
-| `shorts.js` | 쇼츠 대본 생성(Anthropic) → 바탕화면 저장. 제목·태그 포함, 재시도 | generateShorts, shortsExists |
+| `shorts.js` | 쇼츠 대본 생성(OpenAI gpt-5.4-mini) → 프로젝트쇼츠대본 저장. 제목·태그 포함 | generateShorts, shortsExists |
+| `openai.js` | OpenAI Chat Completions 공용 호출(axios, 재시도). 모델 설정은 MODELS | chat, MODELS |
 | `alert.js` | 실패 알림: 슬랙(chat.postMessage) + 네이버 SMTP 메일 동시 발송 | sendAlert |
 | `wpPosts.js` | 워드프레스 글 조회. 계정 있으면 XML-RPC(비공개 포함)+문단 변환(autop), 없으면 공개 REST | getRecentPosts, getPost |
 | `htmlEntities.js` | HTML 엔티티 디코딩 공용 함수 | decodeEntities, decodeDeep |
@@ -54,7 +55,7 @@
 
 | 파일 | 내용 |
 |------|------|
-| `.shorts-config.json` | Anthropic API 키 (쇼츠 생성용) |
+| `.shorts-config.json` | OpenAI API 키 `openaiKey` (쇼츠 생성용). 클라우드는 GitHub Secret `OPENAI_API_KEY` |
 | `.alert-config.json` | 네이버 SMTP 계정/앱비밀번호 |
 | `.wp-config.json` | 워드프레스 계정(username/password) — 비공개 사이트 글 조회용 |
 | `.slack-config.json` | 슬랙 봇 토큰(botToken) + 알림 채널 ID(channel) |
@@ -66,4 +67,5 @@
 - **기사 품질/주제/면책** → `blogGenerator.js`의 generateBlogPost 프롬프트
 - **티스토리 제목·태그·발행** → `tistory.js`
 - **쇼츠 대본 형식** → `shorts.js`의 prompt
+- **AI 모델 변경** → `openai.js`의 MODELS
 - **발행 시각** → `.github/workflows/blog-generator.yml`(클라우드 cron) + 작업 스케줄러 "TistoryMirror"(로컬)

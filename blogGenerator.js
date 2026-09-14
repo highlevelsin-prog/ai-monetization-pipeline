@@ -1,4 +1,4 @@
-const Anthropic = require("@anthropic-ai/sdk");
+const { chat, MODELS } = require("./openai");
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
 
@@ -6,7 +6,6 @@ const xmlrpc = require("xmlrpc");
 const WP_USERNAME = process.env.WP_USERNAME;
 const WP_PASSWORD = process.env.WP_PASSWORD;
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const axios = require("axios");
 const NEWS_API_KEY = process.env.NEWS_API_KEY;
 
@@ -91,13 +90,12 @@ async function generateBlogPost(topic) {
 - 글의 맨 끝은 (마무리 결론) → (해시태그 줄) → (META 줄) → (IMAGE 줄) 순서로만 끝낼 것. 그 외 군더더기 줄 금지
   `.trim();
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 10000,
-    messages: [{ role: "user", content: prompt }],
+  return chat({
+    apiKey: process.env.OPENAI_API_KEY,
+    model: MODELS.blog,
+    prompt,
+    maxTokens: 16000,
   });
-
-  return response.content[0].text;
 }
 
 async function searchImage(keyword, page = 1) {
