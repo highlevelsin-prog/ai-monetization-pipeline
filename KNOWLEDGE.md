@@ -29,7 +29,7 @@
 | `newsSources.js` | 뉴스 소재 공급. kr=국내 증권 RSS / us=NewsAPI (워크플로 입력 source) | pickTopic |
 | `tistory.js` | 티스토리 발행 공유 모듈. Whale 자동실행·로그인확인·제목40자축약·본문/태그입력·발행·발행확인, RSS 중복확인 | ensureWhaleRunning, postToTistory, shortenTitle, isOnTistory |
 | `tistoryMirror.js` | (로컬) 워드프레스 최신글 미러링 + 쇼츠생성 + 세션알림. 중복방지(mirrored.json) | main, getRecentPosts |
-| `shorts.js` | 쇼츠 대본 생성(OpenAI gpt-5.4-mini) → 프로젝트/쇼츠대본 저장. 제목·태그 포함 | generateShorts, shortsExists |
+| `shorts.js` | 쇼츠 대본 생성(OpenAI gpt-5.4-mini) → 프로젝트/쇼츠대본 저장. 300~330자·18~22문장 규칙, 위반 시 최대 2회 재작성(checkScript). 숫자 장면·제목 3안·태그 포함 | generateShorts, shortsExists |
 | `openai.js` | OpenAI Chat Completions 공용 호출(axios, 재시도). 모델 설정은 MODELS | chat, MODELS |
 | `alert.js` | 실패 알림: 슬랙(chat.postMessage) + 네이버 SMTP 메일 동시 발송 | sendAlert |
 | `wpPosts.js` | 워드프레스 글 조회. 계정 있으면 XML-RPC(비공개 포함)+문단 변환(autop), 없으면 공개 REST | getRecentPosts, getPost |
