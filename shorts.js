@@ -1,11 +1,17 @@
 // 유튜브 쇼츠 대본 생성 모듈
-// 기사 내용을 읽고 브루(Vrew)용 60초 쇼츠 대본을 만들어 프로젝트의 쇼츠대본 폴더에 저장한다.
+// 기사 내용을 읽고 브루(Vrew)용 쇼츠 대본 + 업로드 자료(제목·설명란·태그·고정 댓글)를 만들어
+// 프로젝트의 쇼츠대본 폴더에 저장한다.
 const fs = require("fs");
 const path = require("path");
 const { chat, MODELS } = require("./openai");
 
 // 저장 폴더: 프로젝트 폴더 안의 쇼츠대본 (2026-07-24 변경: 바탕화면 -> 프로젝트 폴더)
 const SHORTS_DIR = path.join(__dirname, "쇼츠대본");
+
+// 설명란 해시태그 3개 중 첫 번째(채널 고유 태그). 누르면 채널 영상만 모이는 창구가 된다.
+const CHANNEL_HASHTAG = "#치타아빠";
+// 설명란 맨 아래에 매번 붙일 채널 소개 한 줄. 비워 두면 붙이지 않는다.
+const CHANNEL_INTRO = "";
 
 // OpenAI 키: 로컬 설정 파일(.shorts-config.json의 openaiKey) 또는 환경변수
 function getApiKey() {
@@ -32,21 +38,85 @@ function shortsExists(id) {
   }
 }
 
-// 대본 형식 검사 — 기계적으로 셀 수 있는 규칙(분량·문장 수·문장 길이·추가 출력 항목)만 본다.
-// 반환: 위반 내용 목록 (비어 있으면 통과)
+// 해석(내 관점) 문장의 표현 방식. 대본마다 하나를 무작위로 골라
+// 모든 대본이 같은 말투로 끝나는 '템플릿 콘텐츠'가 되지 않게 한다 (유튜브 수익 창출 정책 대응).
+const INTERPRETATION_STYLES = [
+  "확신형 — 한쪽을 분명히 고르고 그 이유를 기사 속 사실 하나로 받친다",
+  "반론형 — 시장이 흔히 믿는 해석을 먼저 짚고, 나는 반대로 본다고 뒤집는다",
+  "조건형 — 갈림길이 되는 조건을 제시하고, 그중 어느 쪽에 무게를 두는지 밝힌다",
+  "비교형 — 두 기업·두 제품·두 시기를 나란히 놓고 어느 쪽이 유리한지 판정한다",
+  "시간차형 — 단기와 장기를 나눠, 당장은 이렇지만 길게는 다르게 본다고 말한다",
+  "경계형 — 겉으로 보이는 호재보다 숨은 위험을 더 크게 본다고 말한다",
+  "숨은 수혜형 — 뉴스의 주인공이 아닌, 조용히 이득을 보는 쪽을 짚는다",
+];
+
+// 출력에서 [섹션] 블록 본문을 꺼낸다
+function section(script, name) {
+  const m = script.match(new RegExp(`^\\[${name}\\][ \\t]*\\n([\\s\\S]*?)(?=^\\[[^\\]\\n]+\\][ \\t]*$|(?![\\s\\S]))`, "m"));
+  return m ? m[1].trim() : null;
+}
+
+const GENERIC_TAGS = ["재테크", "투자", "경제", "기술주", "주식", "경제뉴스", "쇼츠", "shorts"];
+const ADVICE = /사세요|매수하세요|매도하세요|파세요|담으세요|투자하세요|비중을\s*(늘|줄이|조정|낮추|높이)/;
+
+// 대본 형식 검사 — 기계적으로 셀 수 있는 규칙만 본다. 반환: 위반 내용 목록 (비어 있으면 통과)
 function checkScript(script) {
   const [bodyPart] = script.split(/^={5,}\s*$/m);
   const lines = bodyPart.split("\n").map((l) => l.trim()).filter(Boolean);
   const total = lines.reduce((n, l) => n + l.length, 0); // 공백 포함, 줄바꿈 제외
   const problems = [];
+
+  // 본문
   if (total < 300 || total > 330) problems.push(`본문이 ${total}자 (300~330자여야 함)`);
   if (lines.length < 18 || lines.length > 22) problems.push(`문장이 ${lines.length}개 (18~22개여야 함)`);
   const badLen = lines.filter((l) => l.length < 12 || l.length > 18);
   // 문장 길이는 1~2개 정도 벗어나는 건 허용 (전체 분량·문장 수가 더 중요)
   if (badLen.length > 2) problems.push(`12~18자를 벗어난 문장 ${badLen.length}개: ${badLen.slice(0, 3).map((l) => `"${l}"(${l.length}자)`).join(", ")}`);
-  for (const section of ["[숫자 장면]", "[유튜브 제목]", "[유튜브 태그]"]) {
-    if (!script.includes(section)) problems.push(`${section} 항목 누락`);
+  const advice = lines.filter((l) => ADVICE.test(l));
+  if (advice.length) problems.push(`매수·매도·비중 조정 같은 투자 지시 문장: ${advice.map((l) => `"${l}"`).join(", ")}`);
+
+  // 추가 출력 항목
+  for (const name of ["숫자 장면", "유튜브 제목", "설명란", "유튜브 태그", "고정 댓글"]) {
+    if (section(script, name) === null) problems.push(`[${name}] 항목 누락`);
   }
+
+  // 숫자 장면: 본문에 숫자 문장이 2개 이상 있어야 하고, 적은 번호는 실제로 숫자가 든 문장이어야 한다
+  const numericIdx = lines.map((l, i) => (/\d/.test(l) ? i + 1 : 0)).filter(Boolean);
+  if (numericIdx.length < 2) problems.push(`숫자가 든 문장이 ${numericIdx.length}개 (2개 이상 필요)`);
+  const scenes = ((section(script, "숫자 장면") || "").match(/\d+/g) || []).map(Number);
+  const wrongScenes = scenes.filter((n) => !numericIdx.includes(n));
+  if (wrongScenes.length) problems.push(`[숫자 장면] ${wrongScenes.join(", ")}번 문장에는 숫자가 없음 (숫자 문장: ${numericIdx.join(", ") || "없음"})`);
+
+  const titles = (section(script, "유튜브 제목") || "").split("\n").map((l) => l.replace(/^\d+[.)]\s*/, "").trim()).filter(Boolean);
+  if (section(script, "유튜브 제목") !== null && titles.length !== 3) problems.push(`제목이 ${titles.length}개 (3안이어야 함)`);
+  for (const t of titles) {
+    if (t.length > 25) problems.push(`제목 "${t}" ${t.length}자 (25자 이내)`);
+    if (/#/.test(t)) problems.push(`제목 "${t}"에 해시태그`);
+    if (/\d{4}년|\d+월\s*\d+일/.test(t)) problems.push(`제목 "${t}"에 날짜`);
+    if (/이유$|알아야|총정리|정리$/.test(t)) problems.push(`제목 "${t}"이 정보 없는 마무리("~이유", "알아야 할 것" 등)`);
+    if ((t.match(/\?/g) || []).length > 1) problems.push(`제목 "${t}"에 물음표 여러 개`);
+  }
+
+  const tagText = section(script, "유튜브 태그");
+  if (tagText !== null) {
+    const tags = tagText.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
+    if (tags.length < 5 || tags.length > 8) problems.push(`태그 ${tags.length}개 (5~8개여야 함)`);
+    if (tags.some((t) => t.includes("#"))) problems.push("태그에 # 기호 (태그 칸에는 # 없이)");
+    const generic = tags.filter((t) => GENERIC_TAGS.includes(t.replace(/#/g, "").toLowerCase()));
+    if (generic.length) problems.push(`일반어 태그 제외 필요: ${generic.join(", ")}`);
+  }
+
+  const desc = section(script, "설명란");
+  if (desc !== null) {
+    const hashtags = desc.match(/#[^\s#]+/g) || [];
+    if (hashtags.length !== 3) problems.push(`설명란 해시태그 ${hashtags.length}개 (정확히 3개)`);
+    if (!hashtags.includes(CHANNEL_HASHTAG)) problems.push(`설명란 해시태그에 ${CHANNEL_HASHTAG} 누락`);
+    if (hashtags.some((h) => /^#shorts$/i.test(h))) problems.push("설명란에 #Shorts 불필요");
+  }
+
+  const comment = section(script, "고정 댓글");
+  if (comment !== null && !/\?\s*$/.test(comment)) problems.push("고정 댓글이 질문(?)으로 끝나지 않음");
+
   return problems;
 }
 
@@ -65,8 +135,12 @@ async function generateShorts({ id, title, contentHtml, url }) {
       .trim()
       .slice(0, 4000);
 
-    const prompt = `${url ? url + "의 " : ""}아래 블로그 글을 읽고, 유튜브 쇼츠 대본을 만들어줘.
+    const style = INTERPRETATION_STYLES[Math.floor(Math.random() * INTERPRETATION_STYLES.length)];
+    console.log(`[쇼츠 해석 방식] ${style.split(" — ")[0]}`);
+
+    const prompt = `${url ? url + "의 " : ""}아래 블로그 글을 읽고, 유튜브 쇼츠 대본과 업로드 자료를 만들어줘.
 본문은 브루(Vrew) '텍스트로 비디오 만들기'에 바로 붙여넣을 수 있어야 해.
+채널 이름은 '치타아빠'이고, 뉴스 요약 채널이 아니라 치타아빠가 뉴스를 해석해 주는 채널이야.
 
 [글 제목] ${title}
 [글 내용]
@@ -82,16 +156,37 @@ ${articleText}
    대체 예: "서버 한 대 값이 3억입니다" / "켈로그가 6억 달러를 냈습니다"
 5. 연결용 문장("그런데 말이죠", "왜 그럴까요")은 넣지 않는다.
 6. 숫자는 문장 맨 앞에 둔다. 예: "67%의 CTO가 그렇게 답했어요"
+   숫자가 든 문장을 본문에 2개 이상 넣는다 (썸네일용 숫자 장면이 된다).
 7. 첫 문장은 숫자 또는 기업명으로 시작한다.
 8. 마지막 2문장은 한국 시청자가 당장 할 행동으로 닫는다.
+   단, 매수·매도·비중 조정 같은 투자 지시는 쓰지 않는다. 확인·관찰·기록하는 행동만 쓴다.
+   (예: "10월 실적 발표일을 달력에 적어두세요", "델타항공 공시를 직접 읽어보세요")
 9. 어투는 '~요 / ~습니다'를 유지한다.
 10. 본문 문장에는 번호·기호·빈 줄을 붙이지 않는다.
 11. 숫자·기업명·통계는 [글 내용]에 나온 사실만 쓴다. 위 예시 문장의 숫자와 기업(67% CTO, 켈로그 6억 달러, 서버 3억)은 형식 예시일 뿐이니 절대 가져오지 않는다.
+12. 마지막 행동 2문장 바로 앞에, 이 뉴스를 "그래서 나는 어떻게 보는가"라는 치타아빠 본인의 해석을 2~3문장 넣는다.
+    - 사실 나열이 아니라 판단이어야 한다 (누가 유리한지, 무엇이 과대평가됐는지, 어디로 갈지).
+    - 이번 대본의 해석 표현 방식: ${style}
+    - "나는 이렇게 본다", "제 생각은요", "결론적으로" 같은 정해진 문구를 그대로 쓰지 않는다. 해석임은 드러나되 말투는 방식에 맞게 자연스럽게 쓴다.
+    - 전문가 행세를 하지 않는다. "추천합니다", "확실합니다" 대신 개인의 관점으로 말한다.
+    - 해석 문장도 1~11번 규칙(12~18자, 구체 명사, 숫자 맨 앞, ~요/~습니다)을 똑같이 지킨다.
+    - 기사에 없는 사실을 근거로 만들지 않는다. 판단은 내 것이되 근거는 기사 속 사실이다.
 
-[본문 뒤에 추가 출력]
-[숫자 장면] 숫자가 들어간 문장 번호 2~3개
-[유튜브 제목] 3안
-[유튜브 태그] 10개
+[업로드 자료 규칙]
+A. 유튜브 제목 3안
+   - 각 25자 이내. 쇼츠 피드에서는 앞 20자만 읽히므로 핵심을 맨 앞에 둔다.
+   - 숫자나 고유명사(기업명·인물명)로 시작한다. 본문에 나온 가장 강한 숫자를 제목으로 끌어올린다.
+   - "~하는 이유", "꼭 알아야 할 것" 같은 정보 없는 마무리, 해시태그, 날짜, 물음표 여러 개를 쓰지 않는다.
+   - 좋은 예: "500달러 원격침투, 미국 기업이 뚫렸다" / "기내 폭력 6배, 항공권값이 오른다" / "CTO 67%가 답했다, AI 안전 인증의 함정"
+B. 설명란
+   - 첫 줄: 본문 첫 문장이나 핵심 숫자가 든 문장을 그대로 쓴다 (검색에 쓰이는 줄).
+   - 둘째 줄: 해시태그 정확히 3개 = ${CHANNEL_HASHTAG} + 소재 1개(기업·인물·사건) + 분야 1개(예: #미국주식 #국내주식 #원자재). #Shorts는 넣지 않는다.
+C. 유튜브 태그 5~8개
+   - 기업명·종목명·티커·인물명처럼 구체적인 것만 (예: 엔비디아, NVDA, 오픈AI, 샘알트먼).
+   - 재테크·투자·경제·기술주 같은 일반어는 넣지 않는다.
+   - # 기호 없이 쉼표로 구분한다 (유튜브 태그 칸에 바로 붙여넣기용).
+D. 고정 댓글: 본문 마지막 내용을 시청자에게 묻는 질문 1문장으로 바꾼다 (물음표로 끝냄).
+E. 숫자 장면: 실제로 숫자(0~9)가 들어간 본문 문장의 번호 2~3개 (썸네일로 쓸 장면 후보). 문장 번호는 본문 첫 줄이 1번이다.
 
 아래 형식 그대로 출력해줘 (다른 설명·머리말 없이, 꺾쇠괄호 없이):
 
@@ -108,10 +203,17 @@ ${articleText}
 2. 제목 2안
 3. 제목 3안
 
-[유튜브 태그]
-#태그1 #태그2 #태그3 #태그4 #태그5 #태그6 #태그7 #태그8 #태그9 #태그10`;
+[설명란]
+검색용 첫 줄
+${CHANNEL_HASHTAG} #소재 #분야
 
-    // 규칙(분량·문장 수)을 어기면 어긴 내용을 알려주고 최대 2번 다시 쓰게 한다.
+[유튜브 태그]
+태그1, 태그2, 태그3, 태그4, 태그5
+
+[고정 댓글]
+질문 1문장`;
+
+    // 규칙을 어기면 어긴 내용을 알려주고 최대 2번 다시 쓰게 한다.
     // 끝까지 못 맞추면 가장 마지막 결과를 저장하고 로그에 남긴다.
     let script = "";
     let problems = [];
@@ -131,6 +233,9 @@ ${articleText}
     }
     if (problems.length) console.log("⚠️ 쇼츠 규칙을 완전히 맞추지 못한 채 저장합니다:", problems.join(" / "));
 
+    // 설명란 맨 아래 고정 채널 소개
+    if (CHANNEL_INTRO) script = script.replace(/(\[설명란\][\s\S]*?)(\n\s*\n\[유튜브 태그\])/, `$1\n\n${CHANNEL_INTRO}$2`);
+
     if (!fs.existsSync(SHORTS_DIR)) fs.mkdirSync(SHORTS_DIR, { recursive: true });
     const file = path.join(SHORTS_DIR, `${id}_${sanitize(title)}.txt`);
     fs.writeFileSync(file, script, "utf8");
@@ -140,4 +245,4 @@ ${articleText}
   }
 }
 
-module.exports = { generateShorts, shortsExists, SHORTS_DIR };
+module.exports = { generateShorts, shortsExists, checkScript, SHORTS_DIR };
