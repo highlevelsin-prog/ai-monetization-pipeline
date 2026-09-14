@@ -1,8 +1,13 @@
 @echo off
 cd /d "%~dp0"
-echo [1/3] Trigger WordPress generation (cloud)...
-node triggerGenerate.js
-echo [2/3] Wait ~150s for generation to finish...
-ping -n 151 127.0.0.1 >nul
-echo [3/3] Mirror to Tistory...
-node tistoryMirror.js
+if not exist logs mkdir logs
+set LOG=logs\pipeline.log
+echo.>> %LOG%
+echo ===== %date% %time% =====>> %LOG%
+echo [1/2] Trigger WordPress generation and wait for cloud run...>> %LOG%
+node triggerGenerate.js >> %LOG% 2>&1
+rem WordPress public REST reflects the new post a few seconds after the run ends
+ping -n 21 127.0.0.1 >nul
+echo [2/2] Mirror to Tistory...>> %LOG%
+node tistoryMirror.js >> %LOG% 2>&1
+echo ===== done %time% (exit %errorlevel%) =====>> %LOG%

@@ -26,4 +26,4 @@
 ## 작업 규칙
 
 - 커밋·푸시는 사용자가 요청할 때만. main 브랜치 직접 사용(이 저장소 관행).
-- 비밀키 파일(`.shorts-config.json`, `.alert-config.json`, `whale-profile/`)은 절대 커밋 금지(gitignore됨).
+- 비밀키 파일(`.shorts-config.json`, `.alert-config.json`, `.slack-config.json`, `.wp-config.json`, `whale-profile/`)은 절대 커밋 금지(gitignore됨).

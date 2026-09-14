@@ -10,41 +10,36 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const axios = require("axios");
 const NEWS_API_KEY = process.env.NEWS_API_KEY;
 
+const { pickTopic } = require("./newsSources");
+
+// 소재 국적. econ 1(국내주식)과 econ 2(미국주식)가 서로 다른 소재를 받아야 하므로
+// 워크플로가 NEWS_SOURCE로 지정한다. 지정하지 않으면 예전 그대로 미국 뉴스다 —
+// 기존 동작 보존이 새 기능보다 항상 우선이다.
+const NEWS_SOURCE = (process.env.NEWS_SOURCE || process.argv[2] || "us").toLowerCase();
+const ORIGIN_LABEL = { kr: "국내", us: "해외" };
+
+// GitHub Actions 러너는 UTC라 한국 시간으로 고정 (한국 00~09시 실행 시 전날 날짜 방지)
 const today = new Date().toLocaleDateString("ko-KR", {
+  timeZone: "Asia/Seoul",
   year: "numeric",
   month: "long",
   day: "numeric",
 });
 
+// DRY_RUN=1이면 글 생성·가공까지만 하고 워드프레스에 올리지 않는다 (로컬 점검용)
+const DRY_RUN = process.env.DRY_RUN === "1";
+
 
 async function getTrendingTopics() {
-  const response = await axios.get("https://newsapi.org/v2/top-headlines", {
-    params: {
-      country: "us",
-      category: "business", // 경제·재테크 중심 뉴스
-      pageSize: 20,
-      apiKey: NEWS_API_KEY,
-    },
-  });
-
-  // 정치 기사 제외
-  const candidates = response.data.articles.filter(
-    (article) =>
-      article.title &&
-      !/정치|대통령|국회|선거|여당|야당|trump|election|politic/i.test(article.title)
-  );
-  if (candidates.length === 0) {
-    throw new Error("적합한 경제 뉴스를 찾지 못했습니다.");
-  }
-
-  // 매번 다른 주제가 나오도록 무작위 선택 → 이전 글과 동일 주제 반복 방지
-  const article = candidates[Math.floor(Math.random() * candidates.length)];
-  const keyword = article.title.replace(/ - [^-]+$/, "");
-
+  // 소재 선택은 newsSources.js가 한다(국내=RSS / 미국=NewsAPI).
+  // 여기서는 그 결과를 예전과 같은 { title, keyword } 모양으로 감싸기만 한다.
+  const picked = await pickTopic(NEWS_SOURCE);
   return [
     {
-      title: `오늘의 경제·재테크 이슈 : ${keyword} [${today}]`,
-      keyword,
+      title: `오늘의 경제·재테크 이슈 : ${picked.keyword} [${today}]`,
+      keyword: picked.keyword,
+      origin: picked.origin,
+      sourceLink: picked.link || "",
     },
   ];
 }
@@ -78,7 +73,8 @@ async function generateBlogPost(topic) {
 4) 실전 가이드 섹션: "독자가 지금 할 수 있는 일"을 하나의 번호 소제목으로. 추상적 조언이 아니라 구체적 행동·판단 기준 제시
 5) 마무리: 기자 본인의 전망과 견해를 담은 고유한 결론 ("나는 이렇게 본다")
 6) 본문 관련 경제·재테크 해시태그 10개 (예: #재테크 #투자 #경제 ...)
-7) 맨 마지막 줄에 "META: " 뒤 검색 최적화된 메타 설명(150자 이내)
+7) 그다음 줄에 "META: " 뒤 검색 최적화된 메타 설명(150자 이내)
+8) 맨 마지막 줄에 "IMAGE: " 뒤 이 글에 어울리는 사진 검색용 영어 키워드 2~3단어 (예: IMAGE: airline cabin security)
 
 [문체·형식 규칙]
 - 자연스럽고 전문적인 한국어. 노련한 애널리스트가 자기 견해를 풀어내듯 쓸 것
@@ -92,7 +88,7 @@ async function generateBlogPost(topic) {
 - "—", "---", "***" 같은 구분선을 단독 줄로 넣지 말 것
 - 해시태그 줄에는 해시태그만 작성하고, 앞에 키워드나 다른 단어를 붙이지 말 것
 - 면책·투자 유의 문구("본 글은 정보 제공 목적...", "투자 권유가 아닙니다" 등)를 절대 넣지 말 것
-- 글의 맨 끝은 (마무리 결론) → (해시태그 줄) → (META 줄) 순서로만 끝낼 것. 그 외 군더더기 줄 금지
+- 글의 맨 끝은 (마무리 결론) → (해시태그 줄) → (META 줄) → (IMAGE 줄) 순서로만 끝낼 것. 그 외 군더더기 줄 금지
   `.trim();
 
   const response = await client.messages.create({
@@ -160,7 +156,8 @@ async function insertImages(content, englishKeyword) {
       const imageUrl = await searchImage(shortKeyword, imageIndex);
       imageIndex++;
       if (imageUrl) {
-    result.push(`\n<!-- wp:image -->\n<figure class="wp-block-image"><img src="${imageUrl}" alt="${keyword}"/></figure>\n<!-- /wp:image -->\n<!-- wp:paragraph --><p>&nbsp;</p><!-- /wp:paragraph -->\n`);
+    const alt = keyword.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    result.push(`\n<!-- wp:image -->\n<figure class="wp-block-image"><img src="${imageUrl}" alt="${alt}"/></figure>\n<!-- /wp:image -->\n<!-- wp:paragraph --><p>&nbsp;</p><!-- /wp:paragraph -->\n`);
       }
     }
   }
@@ -179,7 +176,14 @@ async function main() {
     console.log(`[주제] ${topic.title}`);
     console.log("=".repeat(50));
 
-    const post = await generateBlogPost(topic);
+    const rawPost = await generateBlogPost(topic);
+    // 사진 검색어: Pexels는 영어 검색이 정확하므로 모델이 준 영어 키워드를 쓴다.
+    // 없으면 미국 소재는 뉴스 제목(영어), 국내 소재는 일반 증시 키워드로 대신한다.
+    const imageMatch = rawPost.match(/^\s*IMAGE:\s*(.+)$/m);
+    const imageKeyword =
+      (imageMatch && imageMatch[1].replace(/[^A-Za-z0-9 ]/g, " ").replace(/\s+/g, " ").trim()) ||
+      (topic.origin === "kr" ? "stock market finance" : topic.keyword);
+    const post = rawPost.replace(/^\s*IMAGE:\s*.+$/m, '');
     const metaMatch = post.match(/META:\s*(.+)/);
     const metaDescription = metaMatch ? metaMatch[1].trim() : '';
     let cleanPost = post.replace(/META:\s*.+/, '').trim();
@@ -204,18 +208,31 @@ async function main() {
     const postLines = cleanPost.split('\n');
     postLines[0] = `<!-- wp:heading {"level":3} --><h3>${cleanTitle}</h3><!-- /wp:heading -->`;
     const processedPost = postLines.join('\n');
-    const postWithImages = await insertImages(processedPost, topic.keyword);
+    console.log(`[이미지 검색어] ${imageKeyword}`);
+    const postWithImages = await insertImages(processedPost, imageKeyword);
     console.log(postWithImages);
 
     const koreanTitle = cleanTitle + ` [${today}]`;
 
-    // 워드프레스에 발행 (티스토리는 로컬 tistoryMirror.js가 미러링)
-    await postToWordPress(koreanTitle, postWithImages, metaDescription);
-    console.log("워드프레스 업로드 완료!");
+    if (DRY_RUN) {
+      console.log(`\n[DRY_RUN] 워드프레스 발행 생략 — 제목: ${koreanTitle}\n[META] ${metaDescription}`);
+      continue;
+    }
+
+    // 워드프레스에 발행 (네이버 미러링은 로컬 BlogAuto의 econ 버티컬이 가져간다)
+    await postToWordPress(koreanTitle, postWithImages, metaDescription, topic.origin);
+    console.log(`워드프레스 업로드 완료! (소재: ${ORIGIN_LABEL[topic.origin] || topic.origin})`);
   }
 }
 
-async function postToWordPress(title, content, metaDescription) {
+// origin을 워드프레스 **카테고리**로 남긴다.
+//
+// 왜 카테고리인가: 네이버로 미러링하는 쪽(BlogAuto의 econ 버티컬)이 "이 원문이 국내 소재인가
+// 미국 소재인가"를 알아야 국내주식/미국주식 칸을 나눠 쓸 수 있다. 제목이나 본문에 표시를 심으면
+// 독자에게 보이고 재포맷 단계에서 지워야 하지만, 카테고리는 워드프레스 REST가
+// `/wp/v2/posts?categories=<id>`로 서버에서 걸러주므로 원문을 더럽히지 않는다.
+// terms_names는 없는 카테고리를 자동으로 만든다.
+async function postToWordPress(title, content, metaDescription, origin) {
   return new Promise((resolve, reject) => {
     const client = xmlrpc.createSecureClient({
       host: "cheetahfather.wordpress.com",
@@ -227,7 +244,8 @@ async function postToWordPress(title, content, metaDescription) {
       post_title: title,
       post_content: content,
       post_status: "publish",
-      post_excerpt: metaDescription,           
+      post_excerpt: metaDescription,
+      terms_names: { category: [ORIGIN_LABEL[origin] || "해외"] },
     };
 
     client.methodCall(

@@ -6,6 +6,8 @@ const { spawn } = require("child_process");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
+const axios = require("axios");
+const { decodeDeep } = require("./htmlEntities");
 
 const { WHALE_PATH } = require("./whalePath"); // 자동 탐지 (업데이트 대응)
 const TISTORY_BLOG = "ddr5558.tistory.com";
@@ -27,7 +29,7 @@ function isDebugPortUp() {
 
 // 프로필에 "정상 종료됨" 표시를 심어 다음 실행 시 '복구' 알림이 안 뜨게 한다.
 function markProfileExitedClean() {
-  const pref = path.resolve("./whale-profile/Default/Preferences");
+  const pref = path.join(__dirname, "whale-profile", "Default", "Preferences");
   try {
     const data = JSON.parse(fs.readFileSync(pref, "utf8"));
     if (data.profile) {
@@ -45,13 +47,13 @@ async function ensureWhaleRunning() {
   if (await isDebugPortUp()) return; // 이미 떠 있음
 
   // Whale 실행 파일이 없으면(예: 리눅스 서버) 깔끔히 건너뛴다.
-  if (!fs.existsSync(WHALE_PATH)) {
+  if (!WHALE_PATH || !fs.existsSync(WHALE_PATH)) {
     throw new Error("Whale 실행 파일 없음 - 티스토리는 로컬 PC에서만 발행 가능");
   }
 
   console.log("Whale(9222)이 없어 자동으로 실행합니다...");
   markProfileExitedClean(); // 띄우기 직전에 복구 알림 차단
-  const profile = path.resolve("./whale-profile");
+  const profile = path.join(__dirname, "whale-profile");
   const child = spawn(
     WHALE_PATH,
     [`--remote-debugging-port=9222`, `--user-data-dir=${profile}`],
@@ -98,6 +100,28 @@ function shortenTitle(title, max = 40) {
   return cut.trim() + "…";
 }
 
+// 티스토리 RSS에 같은 제목(축약 후)의 글이 있는지 확인한다.
+// 발행 전 중복 방지와, 발행 직후 화면 전환이 확인되지 않을 때의 보조 확인에 쓴다.
+// RSS를 못 읽으면 null(판단 불가)을 돌려준다.
+async function isOnTistory(title) {
+  // 비교 키: 엔티티를 풀고 한글·영문·숫자만 남긴다 (말줄임표·문장부호 차이 무시)
+  const key = (s) => decodeDeep(String(s).replace(/<!\[CDATA\[|\]\]>/g, "")).replace(/[^가-힣A-Za-z0-9]/g, "");
+  try {
+    const res = await axios.get(`https://${TISTORY_BLOG}/rss`, {
+      params: { _: Date.now() },
+      responseType: "text",
+      timeout: 15000,
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+    });
+    const want = key(shortenTitle(title, 40));
+    const titles = [...String(res.data).matchAll(/<item>[\s\S]*?<title>([\s\S]*?)<\/title>/g)].map((m) => key(m[1]));
+    // 완전 일치, 또는 티스토리가 제목을 더 줄여 저장한 경우를 위해 충분히 긴(15자+) 앞부분 일치
+    return titles.some((t) => t === want || (t.length >= 15 && want.startsWith(t)) || (want.length >= 15 && t.startsWith(want)));
+  } catch {
+    return null;
+  }
+}
+
 // 제목/본문을 티스토리에 공개 발행
 async function postToTistory(title, content) {
   // PC가 켜져 있으면 Whale(9222)을 알아서 띄운다 (없을 때만).
@@ -120,13 +144,19 @@ async function postToTistory(title, content) {
     });
 
     // 세션이 만료되면 로그인 페이지로 튕긴다. 2FA는 자동화 불가하므로 건너뜀.
-    if (/auth\/login|kakao/.test(page.url())) {
-      throw new Error("티스토리 로그인 세션 만료 - Whale에서 수동 로그인 필요");
-    }
+    // 리다이렉트가 스크립트로 늦게 일어날 수 있어, 에디터 대기에 실패했을 때도 URL을 다시 본다.
+    const SESSION_EXPIRED = "티스토리 로그인 세션 만료 - Whale에서 수동 로그인 필요";
+    const isLoginUrl = () => /auth\/login|kakao/.test(page.url());
+    if (isLoginUrl()) throw new Error(SESSION_EXPIRED);
 
     // 에디터(TinyMCE) 준비 대기
-    await page.waitForSelector("#post-title-inp");
-    await page.waitForFunction(() => window.tinymce && window.tinymce.activeEditor);
+    try {
+      await page.waitForSelector("#post-title-inp", { timeout: 30000 });
+      await page.waitForFunction(() => window.tinymce && window.tinymce.activeEditor, { timeout: 30000 });
+    } catch (e) {
+      if (isLoginUrl()) throw new Error(SESSION_EXPIRED);
+      throw new Error(`에디터 로드 실패(${page.url()}): ${e.message}`);
+    }
 
     // 워드프레스 전용 블록 주석(<!-- wp:... -->) 제거 → 순수 HTML
     const cleanContent = content.replace(/<!--[\s\S]*?-->/g, "");
@@ -175,19 +205,33 @@ async function postToTistory(title, content) {
     // 태그 추천 드롭다운 등이 떠 있으면 닫기 (발행 버튼 가림 방지)
     await page.keyboard.press("Escape").catch(() => {});
 
-    // 발행: 완료 → 공개 선택 → 발행
+    // 발행: 완료 → 비공개 선택 → 저장 (2026-09-14부터 모든 글 비공개)
+    // 발행 레이어 라디오: #open20=공개, #open15=공개(보호), #open0=비공개
     // page.click 대신 JS 클릭을 써서 오버레이에 가려져도 동작하게 한다.
     await page.evaluate(() => document.querySelector("#publish-layer-btn").click());
-    await page.waitForSelector("#open20", { visible: true });
-    await page.evaluate(() => document.querySelector("#open20").click());
+    await page.waitForSelector("#open0", { visible: true });
+    await page.evaluate(() => document.querySelector("#open0").click());
+    const isPrivate = await page.evaluate(() => document.querySelector("#open0").checked);
+    if (!isPrivate) throw new Error("비공개 설정 실패 - 발행 중단");
     await page.evaluate(() => document.querySelector("#publish-btn").click());
-    await page.waitForNavigation({ waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+
+    // 발행 확인: 글쓰기 화면을 벗어났거나, RSS에 제목이 올라왔으면 성공.
+    // 확인이 안 되면 throw → mirrored.json에 기록되지 않아 다음 실행에서 재시도된다
+    // (재시도 전에 RSS로 중복을 한 번 더 걸러낸다).
+    let confirmed = !/\/manage\/newpost/.test(page.url());
+    for (let i = 0; !confirmed && i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      confirmed = !/\/manage\/newpost/.test(page.url()) || (await isOnTistory(title)) === true;
+    }
+    if (!confirmed) throw new Error("발행 확인 실패 - 글쓰기 화면에 머물러 있음");
 
     console.log("티스토리 발행 완료!");
   } finally {
-    // connect한 브라우저는 close하면 사용자 창이 꺼진다. disconnect만.
+    // 작업 탭은 닫아 누적을 막고, 브라우저는 close하면 사용자 창이 꺼지므로 disconnect만.
+    await page.close().catch(() => {});
     browser.disconnect();
   }
 }
 
-module.exports = { postToTistory };
+module.exports = { postToTistory, isOnTistory, shortenTitle };

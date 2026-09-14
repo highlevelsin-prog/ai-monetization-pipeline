@@ -13,3 +13,15 @@ mirrored.json
 
 # 쇼츠 대본용 Anthropic 키 (절대 커밋 금지)
 .shorts-config.json
+# 파이프라인 실행 로그(로컬 전용)
+logs/
+
+# 슬랙 알림 봇 토큰 (절대 커밋 금지)
+.slack-config.json
+
+# 워드프레스 계정 (비공개 글 조회용, 절대 커밋 금지)
+.wp-config.json
+
+# 로컬 산출물 (쇼츠 대본, 점검 보고서)
+쇼츠대본/
+reports/
